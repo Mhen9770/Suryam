@@ -1,4 +1,5 @@
 
+
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './config.js';
 import { store } from './store.js';
 
@@ -109,7 +110,6 @@ const MODULE_MAP = {
     { id: 'service', icon: 'fa-wrench', label: 'Service Requests' }
   ]
 };
-
 const JOB_STEPS = [
   { key: 'new', icon: 'fa-plus', label: 'New' },
   { key: 'assigned', icon: 'fa-user-plus', label: 'Assigned' },
@@ -783,9 +783,475 @@ function cashFormHtml() {
   <input type="hidden" name="collected_by" value="${profile.id}">
   <button type="submit" class="btn btn-accent btn-block" style="margin-top:12px">Create Cash Entry</button>`;
 }
+/* ============================================================
+   MODULE: SERVICE REQUESTS
+   ============================================================ */
+function renderServiceRequests() {
+  const { profile, serviceRequests } = store.getState();
+  const role = profile.role;
+  let list = serviceRequests;
+  if (role === 'customer') list = serviceRequests.filter(s => s.customer_email === profile.email);
+  if (role === 'employee') list = serviceRequests.filter(s => s.assigned_to === profile.id);
+  const canCreate = ['admin', 'manager', 'customer'].includes(role);
+  const canAssign = ['admin', 'manager'].includes(role);
 
+  let html = `<div class="toolbar">
+    <div class="search-box"><i class="fa-solid fa-search"></i><input type="text" placeholder="Search service requests..." data-filter="sr-search"></div>
+    <select class="filter-select" data-filter="sr-status"><option value="">All Statuses</option>${SR_STATUSES.map(s => `<option value="${s}">${s.replace('_', ' ')}</option>`).join('')}</select>
+    <select class="filter-select" data-filter="sr-priority"><option value="">All Priorities</option>${PRIORITIES.map(p => `<option value="${p}">${p}</option>`).join('')}</select>
+    <div class="toolbar-spacer"></div>
+    ${canCreate ? '<button class="btn btn-accent btn-sm" data-action="create-sr"><i class="fa-solid fa-plus"></i> New Request</button>' : ''}
+  </div>`;
 
-/* Service Requests */
+  const filtered = list.filter(s => {
+    const search = document.querySelector('[data-filter="sr-search"]')?.value?.toLowerCase() || '';
+    const status = document.querySelector('[data-filter="sr-status"]')?.value || '';
+    const priority = document.querySelector('[data-filter="sr-priority"]')?.value || '';
+    if (search && !`${s.customer_name} ${s.address} ${s.issue_description}`.toLowerCase().includes(search)) return false;
+    if (status && s.status !== status) return false;
+    if (priority && s.priority !== priority) return false;
+    return true;
+  });
+
+  const empName = (id) => { const p = store.getState().profiles.find(x => x.id === id); return p ? p.full_name : 'Unassigned'; };
+
+  html += dataTable({
+    cols: [
+      { key: 'customer_name', label: 'Customer' },
+      { key: 'issue_description', label: 'Issue', render: r => esc((r.issue_description || '').slice(0, 40)) },
+      { key: 'priority', label: 'Priority', render: r => badge(r.priority) },
+      ...(role !== 'customer' ? [{ key: 'assigned_to', label: 'Assigned', render: r => esc(empName(r.assigned_to)) }] : []),
+      { key: 'status', label: 'Status', render: r => badge(r.status) },
+      { key: 'created_at', label: 'Date', render: r => fmtDate(r.created_at) }
+    ],
+    rows: filtered,
+    actions: r => {
+      let btns = `<button class="btn btn-xs btn-ghost" data-action="view-sr" data-id="${r.id}">View</button>`;
+      if (canAssign && ['open', 'assigned'].includes(r.status)) btns += ` <button class="btn btn-xs btn-info" data-action="assign-sr" data-id="${r.id}">Assign</button>`;
+      return btns;
+    },
+    empty: 'No service requests found'
+  });
+  return html;
+}
+
+function srFormHtml(sr) {
+  const s = sr || {};
+  return `${field({ name: 'customer_name', label: 'Customer Name', value: s.customer_name, required: true })}
+  ${field({ name: 'customer_phone', label: 'Phone', type: 'tel', value: s.customer_phone, required: true })}
+  ${field({ name: 'customer_email', label: 'Email', type: 'email', value: s.customer_email })}
+  ${field({ name: 'address', label: 'Address', value: s.address, required: true })}
+  ${field({ name: 'amc_number', label: 'AMC Number (optional)', value: s.amc_number })}
+  ${field({ name: 'priority', label: 'Priority', type: 'select', value: s.priority || 'medium', options: PRIORITIES, required: true })}
+  ${field({ name: 'issue_description', label: 'Issue Description', type: 'textarea', value: s.issue_description, required: true, placeholder: 'Describe the issue...' })}
+  <button type="submit" class="btn btn-accent btn-block" style="margin-top:12px">Create Service Request</button>`;
+}
+
+function viewSrHtml(id) {
+  const { serviceRequests, profile, profiles } = store.getState();
+  const s = serviceRequests.find(x => x.id === id);
+  if (!s) return '<p>Not found.</p>';
+  const role = profile.role;
+  const emp = profiles.find(p => p.id === s.assigned_to);
+  let actionBtns = '';
+  if (['admin', 'manager'].includes(role) && ['open', 'assigned'].includes(s.status)) {
+    actionBtns += `<button class="btn btn-info btn-sm" data-action="assign-sr" data-id="${s.id}"><i class="fa-solid fa-user-plus"></i> Assign</button> `;
+  }
+  if (role === 'employee' && s.status === 'assigned' && s.assigned_to === profile.id) {
+    actionBtns += `<button class="btn btn-info btn-sm" data-action="start-sr" data-id="${s.id}"><i class="fa-solid fa-play"></i> Start Work</button> `;
+  }
+  if (role === 'employee' && s.status === 'in_progress' && s.assigned_to === profile.id) {
+    actionBtns += `<button class="btn btn-success btn-sm" data-action="resolve-sr" data-id="${s.id}"><i class="fa-solid fa-check"></i> Mark Resolved</button> `;
+  }
+  if (['admin', 'manager'].includes(role) && s.status === 'resolved') {
+    actionBtns += `<button class="btn btn-success btn-sm" data-action="close-sr" data-id="${s.id}"><i class="fa-solid fa-flag-checkered"></i> Close</button> `;
+  }
+  return `<div class="detail-grid">
+    <div class="detail-item"><label>Customer</label><span>${esc(s.customer_name)}</span></div>
+    <div class="detail-item"><label>Phone</label><span>${esc(s.customer_phone)}</span></div>
+    <div class="detail-item"><label>Email</label><span>${esc(s.customer_email || '—')}</span></div>
+    <div class="detail-item"><label>Priority</label><span>${badge(s.priority)}</span></div>
+    <div class="detail-item"><label>Status</label><span>${badge(s.status)}</span></div>
+    <div class="detail-item"><label>Assigned To</label><span>${emp ? esc(emp.full_name) : 'Unassigned'}</span></div>
+    <div class="detail-item"><label>AMC Number</label><span>${esc(s.amc_number || '—')}</span></div>
+    <div class="detail-item"><label>Created</label><span>${fmtDate(s.created_at)}</span></div>
+    <div class="detail-item detail-full"><label>Address</label><span>${esc(s.address)}</span></div>
+    <div class="detail-item detail-full"><label>Issue</label><span>${esc(s.issue_description)}</span></div>
+  </div>
+  ${actionBtns ? `<div style="display:flex;gap:10px;flex-wrap:wrap">${actionBtns}</div>` : ''}`;
+}
+
+/* ============================================================
+   MODULE: INVENTORY
+   ============================================================ */
+function renderInventory() {
+  const { profile, inventoryLogs, jobs } = store.getState();
+  const role = profile.role;
+  const list = role === 'employee' ? inventoryLogs.filter(i => i.logged_by === profile.id) : inventoryLogs;
+  const canCreate = ['admin', 'manager', 'employee'].includes(role);
+
+  let html = `<div class="toolbar">
+    <div class="search-box"><i class="fa-solid fa-search"></i><input type="text" placeholder="Search inventory..." data-filter="inv-search"></div>
+    <select class="filter-select" data-filter="inv-type"><option value="">All Types</option>${INV_TYPES.map(t => `<option value="${t}">${t}</option>`).join('')}</select>
+    <div class="toolbar-spacer"></div>
+    ${canCreate ? '<button class="btn btn-accent btn-sm" data-action="create-inventory"><i class="fa-solid fa-plus"></i> Log Item</button>' : ''}
+  </div>`;
+
+  const filtered = list.filter(i => {
+    const search = document.querySelector('[data-filter="inv-search"]')?.value?.toLowerCase() || '';
+    const type = document.querySelector('[data-filter="inv-type"]')?.value || '';
+    if (search && !`${i.item_name} ${i.description || ''}`.toLowerCase().includes(search)) return false;
+    if (type && i.type !== type) return false;
+    return true;
+  });
+
+  const jobLabel = (id) => {
+    const j = jobs.find(x => x.id === id);
+    return j ? `${j.customer_name}` : '—';
+  };
+  const empName = (id) => { const p = store.getState().profiles.find(x => x.id === id); return p ? p.full_name : '—'; };
+
+  html += dataTable({
+    cols: [
+      { key: 'item_name', label: 'Item' },
+      { key: 'quantity', label: 'Qty', render: r => `<span class="mono">${r.quantity}</span>` },
+      { key: 'type', label: 'Type', render: r => badge(r.type) },
+      { key: 'job_id', label: 'Job', render: r => esc(jobLabel(r.job_id)) },
+      { key: 'logged_by', label: 'Logged By', render: r => esc(empName(r.logged_by)) },
+      { key: 'created_at', label: 'Date', render: r => fmtDate(r.created_at) }
+    ],
+    rows: filtered,
+    empty: 'No inventory logs found'
+  });
+  return html;
+}
+
+function inventoryFormHtml(jobId) {
+  const { jobs, profile } = store.getState();
+  const jobOpts = jobs.filter(j => !['closed'].includes(j.status)).map(j => ({ value: j.id, label: `${j.customer_name} — ${(j.description || '').slice(0, 30)}` }));
+  return `${field({ name: 'job_id', label: 'Linked Job', type: 'select', value: jobId || '', options: jobOpts, required: true })}
+  ${field({ name: 'item_name', label: 'Item Name', required: true, placeholder: 'e.g. 2MP IP Camera' })}
+  ${field({ name: 'quantity', label: 'Quantity', type: 'number', value: 1, required: true })}
+  ${field({ name: 'type', label: 'Type', type: 'select', options: INV_TYPES, required: true })}
+  ${field({ name: 'description', label: 'Notes', type: 'textarea', placeholder: 'Optional notes...' })}
+  <input type="hidden" name="logged_by" value="${profile.id}">
+  <button type="submit" class="btn btn-accent btn-block" style="margin-top:12px">Log Inventory</button>`;
+}
+
+/* ============================================================
+   MODULE: USER MANAGEMENT
+   ============================================================ */
+function renderUsers() {
+  const { profiles } = store.getState();
+  let html = `<div class="toolbar">
+    <div class="search-box"><i class="fa-solid fa-search"></i><input type="text" placeholder="Search users..." data-filter="usr-search"></div>
+    <select class="filter-select" data-filter="usr-role"><option value="">All Roles</option>${ROLES.map(r => `<option value="${r}">${r}</option>`).join('')}</select>
+    <div class="toolbar-spacer"></div>
+  </div>`;
+
+  const filtered = profiles.filter(p => {
+    const search = document.querySelector('[data-filter="usr-search"]')?.value?.toLowerCase() || '';
+    const role = document.querySelector('[data-filter="usr-role"]')?.value || '';
+    if (search && !`${p.full_name} ${p.email} ${p.phone || ''}`.toLowerCase().includes(search)) return false;
+    if (role && p.role !== role) return false;
+    return true;
+  });
+
+  html += dataTable({
+    cols: [
+      { key: 'full_name', label: 'Name' },
+      { key: 'email', label: 'Email' },
+      { key: 'phone', label: 'Phone', render: r => esc(r.phone || '—') },
+      { key: 'role', label: 'Role', render: r => badge(r.role) },
+      { key: 'created_at', label: 'Joined', render: r => fmtDate(r.created_at) }
+    ],
+    rows: filtered,
+    actions: r => `<button class="btn btn-xs btn-ghost" data-action="edit-user" data-id="${r.id}">Edit</button>`,
+    empty: 'No users found'
+  });
+  return html;
+}
+
+function userFormHtml(user) {
+  const u = user || {};
+  return `${field({ name: 'full_name', label: 'Full Name', value: u.full_name, required: true })}
+  ${field({ name: 'phone', label: 'Phone', type: 'tel', value: u.phone })}
+  ${field({ name: 'role', label: 'Role', type: 'select', value: u.role, options: ROLES, required: true })}
+  <button type="submit" class="btn btn-accent btn-block" style="margin-top:12px">Update User</button>`;
+}
+
+/* ============================================================
+   MAIN RENDER
+   ============================================================ */
+function render() {
+  const { user, profile, module, loading } = store.getState();
+  const landing = document.getElementById('landing');
+  const app = document.getElementById('app');
+  const loginModal = document.getElementById('login-modal');
+
+  /* Not logged in → landing */
+  if (!user || !profile) {
+    landing.classList.remove('hidden');
+    app.classList.add('hidden');
+    return;
+  }
+
+  /* Logged in → ERP app */
+  landing.classList.add('hidden');
+  loginModal.classList.add('hidden');
+  app.classList.remove('hidden');
+
+  const modules = MODULE_MAP[profile.role] || MODULE_MAP.customer;
+  const current = modules.find(m => m.id === module) || modules[0];
+  const activeId = current.id;
+
+  /* Preserve focus + selection across re-renders (e.g. while typing in filters) */
+  const focused = document.activeElement;
+  const focusedFilter = focused && focused.matches?.('[data-filter]') ? focused.dataset.filter : null;
+  const selStart = focusedFilter && 'selectionStart' in focused ? focused.selectionStart : null;
+  const selEnd = focusedFilter && 'selectionEnd' in focused ? focused.selectionEnd : null;
+
+  let body = '';
+  if (loading) {
+    body = '<div class="empty-state"><i class="fa-solid fa-spinner fa-spin"></i><h3>Loading...</h3></div>';
+  } else if (activeId === 'dashboard') body = renderDashboard();
+  else if (activeId === 'enquiries') body = renderEnquiries();
+  else if (activeId === 'jobs') body = renderJobs();
+  else if (activeId === 'cashflow') body = renderCashFlow();
+  else if (activeId === 'service') body = renderServiceRequests();
+  else if (activeId === 'inventory') body = renderInventory();
+  else if (activeId === 'users') body = renderUsers();
+
+  app.innerHTML = `
+    <div class="erp-layout">
+      <aside id="sidebar" class="sidebar">
+        <div class="sidebar-brand"><i class="fa-solid fa-shield-halved"></i> SecureVision</div>
+        <nav class="sidebar-nav">
+          ${modules.map(m => `
+            <div class="sidebar-item ${m.id === activeId ? 'active' : ''}" data-action="nav" data-module="${m.id}">
+              <i class="fa-solid ${m.icon}"></i><span>${esc(m.label)}</span>
+            </div>
+          `).join('')}
+        </nav>
+        <div class="sidebar-footer">
+          <button class="btn btn-ghost btn-block btn-sm" data-action="logout"><i class="fa-solid fa-right-from-bracket"></i> Sign Out</button>
+        </div>
+      </aside>
+      <div class="erp-main">
+        <div class="topbar">
+          <div class="topbar-left">
+            <button class="topbar-hamburger" data-action="toggle-sidebar"><i class="fa-solid fa-bars"></i></button>
+            <div class="topbar-page-title">${esc(current.label)}</div>
+          </div>
+          <div class="topbar-right">
+            <div class="topbar-user">
+              <div class="topbar-avatar">${esc(initials(profile.full_name))}</div>
+              <div class="topbar-user-info">
+                <div class="topbar-user-name">${esc(profile.full_name)}</div>
+                <div class="topbar-user-role">${esc(profile.role)}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <main class="erp-content">${body}</main>
+      </div>
+    </div>
+  `;
+
+  /* Restore focus after DOM replacement */
+  if (focusedFilter) {
+    const el = document.querySelector(`[data-filter="${focusedFilter}"]`);
+    if (el) {
+      el.focus();
+      if (selStart != null && 'setSelectionRange' in el) {
+        try { el.setSelectionRange(selStart, selEnd); } catch (_) { /* ignore for selects */ }
+      }
+    }
+  }
+}
+
+/* ============================================================
+   EVENT LISTENERS
+   ============================================================ */
+function setupEventListeners() {
+  /* --- Landing / login modal --- */
+  document.getElementById('btn-open-login')?.addEventListener('click', () => {
+    document.getElementById('login-modal').classList.remove('hidden');
+    switchTab('login');
+  });
+  document.getElementById('btn-close-login')?.addEventListener('click', () => {
+    document.getElementById('login-modal').classList.add('hidden');
+  });
+  document.getElementById('login-modal')?.addEventListener('click', e => {
+    if (e.target.id === 'login-modal') e.currentTarget.classList.add('hidden');
+  });
+  document.querySelectorAll('.modal-tab').forEach(tab => {
+    tab.addEventListener('click', () => switchTab(tab.dataset.tab));
+  });
+
+  /* Login form */
+  document.getElementById('login-form')?.addEventListener('submit', async e => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    await handleLogin(fd.get('email'), fd.get('password'));
+  });
+
+  /* Register form */
+  document.getElementById('register-form')?.addEventListener('submit', async e => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    await handleRegister({
+      full_name: fd.get('full_name'),
+      email: fd.get('email'),
+      phone: fd.get('phone'),
+      password: fd.get('password')
+    });
+  });
+
+  /* Public enquiry (Request a Quote) */
+  document.getElementById('public-enquiry-form')?.addEventListener('submit', async e => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const ok = await createEnquiry({
+      customer_name: fd.get('name'),
+      customer_email: fd.get('email'),
+      customer_phone: fd.get('phone'),
+      source: fd.get('source'),
+      address: fd.get('address'),
+      requirements: fd.get('requirements'),
+      status: 'new'
+    });
+    if (ok) {
+      e.target.reset();
+      toast('Thank you! We will get back to you within 24 hours.');
+    }
+  });
+
+  /* Track Your Order → open login */
+  document.getElementById('btn-track')?.addEventListener('click', () => {
+    document.getElementById('login-modal').classList.remove('hidden');
+    switchTab('login');
+  });
+
+  /* --- Delegated click handler for the ERP app --- */
+  document.body.addEventListener('click', async e => {
+    const target = e.target.closest('[data-action]');
+    if (!target) return;
+    const action = target.dataset.action;
+    const id = target.dataset.id;
+
+    /* Navigation */
+    if (action === 'nav') {
+      store.setState({ module: target.dataset.module });
+      closeSidebarMobile();
+      return;
+    }
+    if (action === 'toggle-sidebar') {
+      document.getElementById('sidebar')?.classList.toggle('open');
+      return;
+    }
+    if (action === 'logout') {
+      await handleLogout();
+      return;
+    }
+    if (action === 'close-modal') {
+      closeModal();
+      return;
+    }
+
+    /* Enquiries */
+    if (action === 'create-enquiry') {
+      showModal('New Enquiry', `<form data-form="enquiry">${enquiryFormHtml()}</form>`, 'modal-lg');
+      return;
+    }
+    if (action === 'view-enquiry') {
+      showModal('Enquiry Details', viewEnquiryHtml(id), 'modal-lg');
+      return;
+    }
+    if (action === 'edit-enquiry') {
+      const enq = store.getState().enquiries.find(x => x.id === id);
+      if (enq) showModal('Edit Enquiry', `<form data-form="enquiry-edit"><input type="hidden" name="id" value="${enq.id}">${enquiryFormHtml(enq)}</form>`, 'modal-lg');
+      return;
+    }
+    if (action === 'delete-enquiry') {
+      if (!confirm('Delete this enquiry?')) return;
+      await deleteEnquiry(id);
+      await fetchAllData();
+      return;
+    }
+    if (action === 'convert-enquiry') {
+      await convertToJob(id);
+      return;
+    }
+
+    /* Jobs */
+    if (action === 'create-job') {
+      showModal('New Job', `<form data-form="job">${jobFormHtml()}</form>`, 'modal-lg');
+      return;
+    }
+    if (action === 'view-job') {
+      e.preventDefault();
+      showModal('Job Details', viewJobHtml(id), 'modal-xl');
+      return;
+    }
+    if (action === 'assign-job') {
+      const { profiles } = store.getState();
+      const job = store.getState().jobs.find(j => j.id === id);
+      const employees = profiles.filter(p => ['employee', 'manager'].includes(p.role));
+      showModal('Assign Job', `<form data-form="assign-job">
+        <input type="hidden" name="id" value="${id}">
+        ${field({ name: 'assigned_to', label: 'Assign To', type: 'select', value: job?.assigned_to, options: employees.map(e => ({ value: e.id, label: e.full_name })), required: true })}
+        ${field({ name: 'scheduled_date', label: 'Scheduled Date', type: 'date', value: job?.scheduled_date ? job.scheduled_date.split('T')[0] : '' })}
+        <button type="submit" class="btn btn-accent btn-block" style="margin-top:12px">Assign</button>
+      </form>`);
+      return;
+    }
+    if (action === 'start-job') {
+      await advanceJob(id, 'in_progress');
+      return;
+    }
+    if (action === 'collect-job') {
+      showModal('Collect Payment', `<form data-form="collect-payment">
+        <input type="hidden" name="job_id" value="${id}">
+        ${field({ name: 'amount', label: 'Amount (₹)', type: 'number', required: true, placeholder: '0.00' })}
+        ${field({ name: 'description', label: 'Notes', type: 'textarea', placeholder: 'Payment notes...' })}
+        <button type="submit" class="btn btn-accent btn-block" style="margin-top:12px">Record Payment</button>
+      </form>`);
+      return;
+    }
+    if (action === 'verify-job') {
+      await verifyJob(id);
+      return;
+    }
+    if (action === 'approve-job') {
+      await approveJob(id);
+      return;
+    }
+
+    /* Cash Flow */
+    if (action === 'create-cash') {
+      showModal('New Cash Entry', `<form data-form="cash">${cashFormHtml()}</form>`, 'modal-lg');
+      return;
+    }
+    if (action === 'verify-cash') {
+      const { profile } = store.getState();
+      await updateCashEntry(id, { verified_by: profile.id, status: 'verified' });
+      await fetchAllData();
+      return;
+    }
+    if (action === 'approve-cash') {
+      const { profile } = store.getState();
+      await updateCashEntry(id, { approved_by: profile.id, status: 'approved' });
+      await fetchAllData();
+      return;
+    }
+    if (action === 'reject-cash') {
+      await updateCashEntry(id, { status: 'rejected' });
+      await fetchAllData();
+      return;
+    }
+
+    /* Service Requests */
     if (action === 'create-sr') {
       showModal('New Service Request', `<form data-form="sr">${srFormHtml()}</form>`, 'modal-lg');
       return;
@@ -839,6 +1305,14 @@ function cashFormHtml() {
       const user = store.getState().profiles.find(p => p.id === id);
       if (user) showModal('Edit User', `<form data-form="user-edit"><input type="hidden" name="id" value="${user.id}">${userFormHtml(user)}</form>`);
       return;
+    }
+  });
+
+  /* --- Delegated input handler for filters --- */
+  document.body.addEventListener('input', e => {
+    if (e.target.matches('[data-filter]')) {
+      /* Re-render active module to apply filter */
+      render();
     }
   });
 
@@ -949,18 +1423,41 @@ function closeSidebarMobile() {
 /* ============================================================
    INIT
    ============================================================ */
+async function ensureProfile(user) {
+  /* Try to fetch existing profile */
+  let profile = await fetchProfile(user.id);
+  if (profile) return profile;
+
+  /* No profile row → create one from auth metadata (works when
+     the DB does not have an auto-create trigger set up) */
+  const meta = user.user_metadata || {};
+  const insertData = {
+    id: user.id,
+    email: user.email,
+    full_name: meta.full_name || meta.name || user.email.split('@')[0],
+    phone: meta.phone || null,
+    role: meta.role || 'customer'
+  };
+  const { data, error } = await sb.from('profiles').insert(insertData).select().single();
+  if (error) {
+    console.error('Profile create error', error);
+    /* One more attempt to fetch – trigger may have raced with us */
+    return await fetchProfile(user.id);
+  }
+  return data;
+}
+
 async function init() {
   setupEventListeners();
 
   /* Listen for auth state changes */
   sb.auth.onAuthStateChange(async (event, session) => {
     if (session?.user) {
-      const profile = await fetchProfile(session.user.id);
+      const profile = await ensureProfile(session.user);
       if (profile) {
         store.setState({ user: session.user, profile });
         await fetchAllData();
       } else {
-        /* Profile might not exist yet (just registered) */
         store.setState({ user: session.user, profile: null });
       }
     } else {
@@ -971,7 +1468,7 @@ async function init() {
   /* Check existing session */
   const { data: { session } } = await sb.auth.getSession();
   if (session?.user) {
-    const profile = await fetchProfile(session.user.id);
+    const profile = await ensureProfile(session.user);
     if (profile) {
       store.setState({ user: session.user, profile });
       await fetchAllData();
