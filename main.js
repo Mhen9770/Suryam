@@ -227,6 +227,181 @@ async function handleLogout() {
   store.setState({ user: null, profile: null, module: 'dashboard', itemId: null, enquiries: [], jobs: [], cashEntries: [], serviceRequests: [], inventoryLogs: [], profiles: [] });
   toast('Logged out', 'info');
 }
+/* ============================================================
+   DATA LAYER
+   ============================================================ */
+async function fetchProfile(userId) {
+  const { data, error } = await sb.from('profiles').select('*').eq('id', userId).single();
+  if (error) { console.error('Profile fetch error', error); return null; }
+  return data;
+}
+
+async function fetchAllData() {
+  store.setState({ loading: true });
+  const { profile } = store.getState();
+  const role = profile?.role;
+  try {
+    const [eqRes, jobRes, cashRes, srRes, invRes, profRes] = await Promise.all([
+      sb.from('enquiries').select('*').order('created_at', { ascending: false }),
+      sb.from('jobs').select('*').order('created_at', { ascending: false }),
+      sb.from('cash_entries').select('*').order('created_at', { ascending: false }),
+      sb.from('service_requests').select('*').order('created_at', { ascending: false }),
+      sb.from('inventory_logs').select('*').order('created_at', { ascending: false }),
+      role === 'admin' || role === 'manager' ? sb.from('profiles').select('*').order('created_at', { ascending: false }) : Promise.resolve([])
+    ]);
+    store.setState({
+      enquiries: eqRes.data || [],
+      jobs: jobRes.data || [],
+      cashEntries: cashRes.data || [],
+      serviceRequests: srRes.data || [],
+      inventoryLogs: invRes.data || [],
+      profiles: profRes.data || [],
+      loading: false
+    });
+  } catch (err) {
+    console.error(err);
+    store.setState({ loading: false });
+    toast('Failed to load data', 'error');
+  }
+}
+
+/* ============================================================
+   CRUD OPERATIONS
+   ============================================================ */
+async function createEnquiry(data) {
+  const { error } = await sb.from('enquiries').insert(data);
+  if (error) { toast(error.message, 'error'); return false; }
+  toast('Enquiry created'); return true;
+}
+async function updateEnquiry(id, data) {
+  const { error } = await sb.from('enquiries').update(data).eq('id', id);
+  if (error) { toast(error.message, 'error'); return false; }
+  toast('Enquiry updated'); return true;
+}
+async function deleteEnquiry(id) {
+  const { error } = await sb.from('enquiries').delete().eq('id', id);
+  if (error) { toast(error.message, 'error'); return false; }
+  toast('Enquiry deleted'); return true;
+}
+
+async function createJob(data) {
+  const { error } = await sb.from('jobs').insert(data);
+  if (error) { toast(error.message, 'error'); return false; }
+  toast('Job created'); return true;
+}
+async function updateJob(id, data) {
+  const { error } = await sb.from('jobs').update(data).eq('id', id);
+  if (error) { toast(error.message, 'error'); return false; }
+  toast('Job updated'); return true;
+}
+
+async function createCashEntry(data) {
+  const { error } = await sb.from('cash_entries').insert(data);
+  if (error) { toast(error.message, 'error'); return false; }
+  toast('Cash entry created'); return true;
+}
+async function updateCashEntry(id, data) {
+  const { error } = await sb.from('cash_entries').update(data).eq('id', id);
+  if (error) { toast(error.message, 'error'); return false; }
+  toast('Cash entry updated'); return true;
+}
+
+async function createServiceRequest(data) {
+  const { error } = await sb.from('service_requests').insert(data);
+  if (error) { toast(error.message, 'error'); return false; }
+  toast('Service request created'); return true;
+}
+async function updateServiceRequest(id, data) {
+  const { error } = await sb.from('service_requests').update(data).eq('id', id);
+  if (error) { toast(error.message, 'error'); return false; }
+  toast('Service request updated'); return true;
+}
+
+async function createInventoryLog(data) {
+  const { error } = await sb.from('inventory_logs').insert(data);
+  if (error) { toast(error.message, 'error'); return false; }
+  toast('Inventory logged'); return true;
+}
+async function updateProfile(id, data) {
+  const { error } = await sb.from('profiles').update(data).eq('id', id);
+  if (error) { toast(error.message, 'error'); return false; }
+  toast('Profile updated'); return true;
+}
+
+/* ============================================================
+   WORKFLOW
+   ============================================================ */
+async function convertToJob(enqId) {
+  const { enquiries, profile } = store.getState();
+  const enq = enquiries.find(e => e.id === enqId);
+  if (!enq) return;
+  const jobData = {
+    enquiry_id: enqId,
+    customer_name: enq.customer_name,
+    customer_phone: enq.customer_phone,
+    customer_email: enq.customer_email,
+    address: enq.address,
+    description: enq.requirements,
+    status: 'new',
+    created_by: profile.id
+  };
+  const ok = await createJob(jobData);
+  if (ok) {
+    await updateEnquiry(enqId, { status: 'converted' });
+    await fetchAllData();
+    closeModal();
+  }
+}
+
+async function advanceJob(jobId, newStatus, extra = {}) {
+  const ok = await updateJob(jobId, { status: newStatus, ...extra });
+  if (ok) { await fetchAllData(); closeModal(); }
+}
+
+async function collectPayment(jobId) {
+  const form = document.querySelector('[data-form="collect-payment"]');
+  if (!form) return;
+  const fd = new FormData(form);
+  const amount = parseFloat(fd.get('amount'));
+  if (!amount || amount <= 0) { toast('Enter a valid amount', 'error'); return; }
+  const { profile } = store.getState();
+  const ok = await createCashEntry({
+    job_id: jobId,
+    amount,
+    type: 'income',
+    category: 'installation',
+    description: fd.get('description') || 'Payment collected',
+    collected_by: profile.id,
+    status: 'pending'
+  });
+  if (ok) {
+    await advanceJob(jobId, 'verifying');
+  }
+}
+
+async function verifyJob(jobId) {
+  const { profile, jobs } = store.getState();
+  const job = jobs.find(j => j.id === jobId);
+  if (!job) return;
+  /* Verify associated cash entries */
+  const { cashEntries } = store.getState();
+  const related = cashEntries.filter(c => c.job_id === jobId && c.status === 'pending');
+  for (const ce of related) {
+    await updateCashEntry(ce.id, { verified_by: profile.id, status: 'verified' });
+  }
+  await advanceJob(jobId, 'approved');
+}
+
+async function approveJob(jobId) {
+  const { profile, jobs, cashEntries } = store.getState();
+  const job = jobs.find(j => j.id === jobId);
+  if (!job) return;
+  const related = cashEntries.filter(c => c.job_id === jobId && c.status === 'verified');
+  for (const ce of related) {
+    await updateCashEntry(ce.id, { approved_by: profile.id, status: 'approved' });
+  }
+  await advanceJob(jobId, 'closed', { completed_date: new Date().toISOString() });
+}
 
 /* Service Requests */
     if (action === 'create-sr') {
