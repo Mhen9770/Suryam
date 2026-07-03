@@ -402,6 +402,313 @@ async function approveJob(jobId) {
   }
   await advanceJob(jobId, 'closed', { completed_date: new Date().toISOString() });
 }
+/* ============================================================
+   MODULE: DASHBOARD
+   ============================================================ */
+function renderDashboard() {
+  const { profile, enquiries, jobs, cashEntries, serviceRequests, inventoryLogs } = store.getState();
+  const role = profile.role;
+  const myJobs = role === 'employee' ? jobs.filter(j => j.assigned_to === profile.id) : jobs;
+  const myEnq = role === 'customer' ? enquiries.filter(e => e.customer_email === profile.email) : enquiries;
+  const mySr = role === 'customer' ? serviceRequests.filter(s => s.customer_email === profile.email) :
+               role === 'employee' ? serviceRequests.filter(s => s.assigned_to === profile.id) : serviceRequests;
+
+  let html = '';
+  if (role === 'admin') {
+    const revenue = cashEntries.filter(c => c.type === 'income' && c.status === 'approved').reduce((s, c) => s + Number(c.amount), 0);
+    const expenses = cashEntries.filter(c => c.type === 'expense').reduce((s, c) => s + Number(c.amount), 0);
+    const activeJobs = jobs.filter(j => !['closed', 'approved'].includes(j.status)).length;
+    const pendingApproval = jobs.filter(j => j.status === 'approved').length + cashEntries.filter(c => c.status === 'verified').length;
+    const openEnq = enquiries.filter(e => ['new', 'contacted', 'qualified'].includes(e.status)).length;
+    const openSr = serviceRequests.filter(s => !['closed', 'resolved'].includes(s.status)).length;
+    html += `<div class="stats-grid">
+      ${statCard({ label: 'Total Revenue', value: fmtCurrency(revenue), icon: 'fa-arrow-trend-up', color: 'green', sub: `Expenses: ${fmtCurrency(expenses)}` })}
+      ${statCard({ label: 'Active Jobs', value: activeJobs, icon: 'fa-briefcase', color: 'blue' })}
+      ${statCard({ label: 'Pending Approval', value: pendingApproval, icon: 'fa-clock', color: 'orange' })}
+      ${statCard({ label: 'Open Enquiries', value: openEnq, icon: 'fa-magnifying-glass', color: 'blue' })}
+      ${statCard({ label: 'Service Requests', value: openSr, icon: 'fa-wrench', color: 'orange' })}
+    </div>`;
+    html += `<div class="section-header"><h2>Recent Jobs</h2></div>`;
+    html += dataTable({
+      cols: [
+        { key: 'customer_name', label: 'Customer' },
+        { key: 'address', label: 'Address' },
+        { key: 'status', label: 'Status', render: r => badge(r.status) },
+        { key: 'created_at', label: 'Date', render: r => fmtDate(r.created_at) }
+      ],
+      rows: jobs.slice(0, 8),
+      actions: r => `<button class="btn btn-xs btn-ghost" data-action="view-job" data-id="${r.id}">View</button>`
+    });
+  } else if (role === 'manager') {
+    const toVerify = jobs.filter(j => j.status === 'verifying').length;
+    const revenue = cashEntries.filter(c => c.type === 'income' && c.status === 'approved').reduce((s, c) => s + Number(c.amount), 0);
+    const teamJobs = jobs.filter(j => !['closed', 'new'].includes(j.status)).length;
+    const openSr = serviceRequests.filter(s => !['closed', 'resolved'].includes(s.status)).length;
+    html += `<div class="stats-grid">
+      ${statCard({ label: 'Jobs to Verify', value: toVerify, icon: 'fa-check-double', color: 'orange' })}
+      ${statCard({ label: 'Team Jobs Active', value: teamJobs, icon: 'fa-briefcase', color: 'blue' })}
+      ${statCard({ label: 'Revenue (Approved)', value: fmtCurrency(revenue), icon: 'fa-arrow-trend-up', color: 'green' })}
+      ${statCard({ label: 'Open Service Requests', value: openSr, icon: 'fa-wrench', color: 'blue' })}
+    </div>`;
+    html += `<div class="section-header"><h2>Jobs Requiring Verification</h2></div>`;
+    html += dataTable({
+      cols: [
+        { key: 'customer_name', label: 'Customer' },
+        { key: 'description', label: 'Description' },
+        { key: 'status', label: 'Status', render: r => badge(r.status) },
+        { key: 'created_at', label: 'Date', render: r => fmtDate(r.created_at) }
+      ],
+      rows: jobs.filter(j => ['verifying', 'collecting', 'in_progress'].includes(j.status)),
+      actions: r => `<button class="btn btn-xs btn-ghost" data-action="view-job" data-id="${r.id}">View</button>`
+    });
+  } else if (role === 'employee') {
+    const active = myJobs.filter(j => !['closed', 'approved'].includes(j.status));
+    const today = myJobs.filter(j => j.scheduled_date === new Date().toISOString().split('T')[0]);
+    const usedItems = inventoryLogs.filter(i => i.logged_by === profile.id).length;
+    const mySrOpen = mySr.filter(s => !['closed', 'resolved'].includes(s.status)).length;
+    html += `<div class="stats-grid">
+      ${statCard({ label: 'Active Jobs', value: active.length, icon: 'fa-briefcase', color: 'blue' })}
+      ${statCard({ label: "Today's Jobs", value: today.length, icon: 'fa-calendar-day', color: 'green' })}
+      ${statCard({ label: 'Items Logged', value: usedItems, icon: 'fa-boxes-stacked', color: 'orange' })}
+      ${statCard({ label: 'Service Requests', value: mySrOpen, icon: 'fa-wrench', color: 'blue' })}
+    </div>`;
+    html += `<div class="section-header"><h2>My Active Jobs</h2></div>`;
+    html += dataTable({
+      cols: [
+        { key: 'customer_name', label: 'Customer' },
+        { key: 'address', label: 'Address' },
+        { key: 'status', label: 'Status', render: r => badge(r.status) },
+        { key: 'scheduled_date', label: 'Scheduled', render: r => fmtDate(r.scheduled_date) }
+      ],
+      rows: active,
+      actions: r => `<button class="btn btn-xs btn-ghost" data-action="view-job" data-id="${r.id}">View</button>`
+    });
+  } else {
+    const activeJobs = myJobs.filter(j => !['closed', 'approved'].includes(j.status)).length;
+    const openSr = mySr.filter(s => !['closed', 'resolved'].includes(s.status)).length;
+    html += `<div class="stats-grid">
+      ${statCard({ label: 'My Enquiries', value: myEnq.length, icon: 'fa-magnifying-glass', color: 'blue' })}
+      ${statCard({ label: 'Active Jobs', value: activeJobs, icon: 'fa-briefcase', color: 'green' })}
+      ${statCard({ label: 'Service Requests', value: openSr, icon: 'fa-wrench', color: 'orange' })}
+    </div>`;
+    html += `<div class="section-header"><h2>My Jobs</h2></div>`;
+    html += dataTable({
+      cols: [
+        { key: 'description', label: 'Description' },
+        { key: 'status', label: 'Status', render: r => badge(r.status) },
+        { key: 'created_at', label: 'Date', render: r => fmtDate(r.created_at) }
+      ],
+      rows: myJobs.slice(0, 8),
+      actions: r => `<button class="btn btn-xs btn-ghost" data-action="view-job" data-id="${r.id}">View</button>`
+    });
+  }
+  return html;
+}
+
+/* ============================================================
+   MODULE: ENQUIRIES
+   ============================================================ */
+function renderEnquiries() {
+  const { profile, enquiries } = store.getState();
+  const role = profile.role;
+  const list = role === 'customer' ? enquiries.filter(e => e.customer_email === profile.email) : enquiries;
+  const canCreate = ['admin', 'manager'].includes(role);
+  const canEdit = ['admin', 'manager'].includes(role);
+
+  let html = `<div class="toolbar">
+    <div class="search-box"><i class="fa-solid fa-search"></i><input type="text" placeholder="Search enquiries..." data-filter="enq-search"></div>
+    <select class="filter-select" data-filter="enq-status"><option value="">All Statuses</option>${ENQ_STATUSES.map(s => `<option value="${s}">${s}</option>`).join('')}</select>
+    <div class="toolbar-spacer"></div>
+    ${canCreate ? '<button class="btn btn-accent btn-sm" data-action="create-enquiry"><i class="fa-solid fa-plus"></i> New Enquiry</button>' : ''}
+  </div>`;
+
+  const filtered = list.filter(e => {
+    const search = document.querySelector('[data-filter="enq-search"]')?.value?.toLowerCase() || '';
+    const status = document.querySelector('[data-filter="enq-status"]')?.value || '';
+    if (search && !`${e.customer_name} ${e.customer_email} ${e.customer_phone} ${e.address}`.toLowerCase().includes(search)) return false;
+    if (status && e.status !== status) return false;
+    return true;
+  });
+
+  html += dataTable({
+    cols: [
+      { key: 'customer_name', label: 'Customer' },
+      { key: 'customer_phone', label: 'Phone' },
+      { key: 'source', label: 'Source', render: r => badge(r.source) },
+      { key: 'status', label: 'Status', render: r => badge(r.status) },
+      { key: 'created_at', label: 'Date', render: r => fmtDate(r.created_at) }
+    ],
+    rows: filtered,
+    actions: r => {
+      let btns = `<button class="btn btn-xs btn-ghost" data-action="view-enquiry" data-id="${r.id}">View</button>`;
+      if (canEdit && r.status !== 'converted') btns += `<button class="btn btn-xs btn-ghost" data-action="edit-enquiry" data-id="${r.id}">Edit</button>`;
+      if (canEdit && ['new', 'contacted', 'qualified'].includes(r.status)) btns += `<button class="btn btn-xs btn-success" data-action="convert-enquiry" data-id="${r.id}">Convert</button>`;
+      if (canEdit && role === 'admin') btns += `<button class="btn btn-xs btn-danger" data-action="delete-enquiry" data-id="${r.id}">Del</button>`;
+      return btns;
+    },
+    empty: 'No enquiries found'
+  });
+  return html;
+}
+
+function enquiryFormHtml(enq) {
+  const e = enq || {};
+  return `${field({ name: 'customer_name', label: 'Customer Name', value: e.customer_name, required: true })}
+  ${field({ name: 'customer_email', label: 'Email', type: 'email', value: e.customer_email, required: true })}
+  ${field({ name: 'customer_phone', label: 'Phone', type: 'tel', value: e.customer_phone, required: true })}
+  ${field({ name: 'address', label: 'Address', value: e.address, required: true })}
+  ${field({ name: 'source', label: 'Source', type: 'select', value: e.source, options: SOURCES, required: true })}
+  ${field({ name: 'requirements', label: 'Requirements', type: 'textarea', value: e.requirements, placeholder: 'Describe CCTV requirements...' })}
+  ${enq ? field({ name: 'status', label: 'Status', type: 'select', value: e.status, options: ENQ_STATUSES }) : ''}
+  ${field({ name: 'notes', label: 'Notes', type: 'textarea', value: e.notes, placeholder: 'Internal notes...' })}
+  <button type="submit" class="btn btn-accent btn-block" style="margin-top:12px">${enq ? 'Update Enquiry' : 'Create Enquiry'}</button>`;
+}
+
+function viewEnquiryHtml(id) {
+  const { enquiries, jobs, profile } = store.getState();
+  const e = enquiries.find(x => x.id === id);
+  if (!e) return '<p>Not found.</p>';
+  const relatedJob = jobs.find(j => j.enquiry_id === id);
+  const canConvert = ['admin', 'manager'].includes(profile.role) && ['new', 'contacted', 'qualified'].includes(e.status);
+  return `<div class="detail-grid">
+    <div class="detail-item"><label>Customer</label><span>${esc(e.customer_name)}</span></div>
+    <div class="detail-item"><label>Phone</label><span>${esc(e.customer_phone)}</span></div>
+    <div class="detail-item"><label>Email</label><span>${esc(e.customer_email)}</span></div>
+    <div class="detail-item"><label>Source</label><span>${badge(e.source)}</span></div>
+    <div class="detail-item"><label>Status</label><span>${badge(e.status)}</span></div>
+    <div class="detail-item"><label>Created</label><span>${fmtDate(e.created_at)}</span></div>
+    <div class="detail-item detail-full"><label>Address</label><span>${esc(e.address)}</span></div>
+    <div class="detail-item detail-full"><label>Requirements</label><span>${esc(e.requirements)}</span></div>
+    ${e.notes ? `<div class="detail-item detail-full"><label>Notes</label><span>${esc(e.notes)}</span></div>` : ''}
+  </div>
+  ${relatedJob ? `<p style="margin-bottom:16px"><strong>Converted to Job:</strong> <a href="#" data-action="view-job" data-id="${relatedJob.id}">${relatedJob.id.slice(0,8)}...</a> ${badge(relatedJob.status)}</p>` : ''}
+  ${canConvert ? `<button class="btn btn-success" data-action="convert-enquiry" data-id="${e.id}"><i class="fa-solid fa-arrow-right"></i> Convert to Job</button>` : ''}`;
+}
+
+/* ============================================================
+   MODULE: JOBS
+   ============================================================ */
+function renderJobs() {
+  const { profile, jobs } = store.getState();
+  const role = profile.role;
+  let list = jobs;
+  if (role === 'employee') list = jobs.filter(j => j.assigned_to === profile.id);
+  if (role === 'customer') list = jobs.filter(j => j.customer_email === profile.email);
+  const canCreate = ['admin', 'manager'].includes(role);
+
+  let html = `<div class="toolbar">
+    <div class="search-box"><i class="fa-solid fa-search"></i><input type="text" placeholder="Search jobs..." data-filter="job-search"></div>
+    <select class="filter-select" data-filter="job-status"><option value="">All Statuses</option>${JOB_STATUSES.map(s => `<option value="${s}">${s.replace('_', ' ')}</option>`).join('')}</select>
+    <div class="toolbar-spacer"></div>
+    ${canCreate ? '<button class="btn btn-accent btn-sm" data-action="create-job"><i class="fa-solid fa-plus"></i> New Job</button>' : ''}
+  </div>`;
+
+  const filtered = list.filter(j => {
+    const search = document.querySelector('[data-filter="job-search"]')?.value?.toLowerCase() || '';
+    const status = document.querySelector('[data-filter="job-status"]')?.value || '';
+    if (search && !`${j.customer_name} ${j.address} ${j.description}`.toLowerCase().includes(search)) return false;
+    if (status && j.status !== status) return false;
+    return true;
+  });
+
+  const empName = (id) => {
+    const p = store.getState().profiles.find(x => x.id === id);
+    return p ? p.full_name : 'Unassigned';
+  };
+
+  html += dataTable({
+    cols: [
+      { key: 'customer_name', label: 'Customer' },
+      { key: 'description', label: 'Description', render: r => esc((r.description || '').slice(0, 50)) },
+      ...(role !== 'customer' ? [{ key: 'assigned_to', label: 'Assigned To', render: r => esc(empName(r.assigned_to)) }] : []),
+      { key: 'status', label: 'Status', render: r => badge(r.status) },
+      { key: 'scheduled_date', label: 'Scheduled', render: r => fmtDate(r.scheduled_date) }
+    ],
+    rows: filtered,
+    actions: r => `<button class="btn btn-xs btn-ghost" data-action="view-job" data-id="${r.id}">View</button>`,
+    empty: 'No jobs found'
+  });
+  return html;
+}
+
+function jobFormHtml(job) {
+  const j = job || {};
+  const { profiles, profile } = store.getState();
+  const employees = profiles.filter(p => ['employee', 'manager'].includes(p.role));
+  return `${field({ name: 'customer_name', label: 'Customer Name', value: j.customer_name, required: true })}
+  ${field({ name: 'customer_phone', label: 'Phone', type: 'tel', value: j.customer_phone, required: true })}
+  ${field({ name: 'customer_email', label: 'Email', type: 'email', value: j.customer_email })}
+  ${field({ name: 'address', label: 'Address', value: j.address, required: true })}
+  ${field({ name: 'description', label: 'Description', type: 'textarea', value: j.description, required: true, placeholder: 'Job scope and details...' })}
+  ${field({ name: 'assigned_to', label: 'Assign To', type: 'select', value: j.assigned_to, options: employees.map(e => ({ value: e.id, label: e.full_name })) })}
+  ${field({ name: 'scheduled_date', label: 'Scheduled Date', type: 'date', value: j.scheduled_date ? j.scheduled_date.split('T')[0] : '' })}
+  ${job ? field({ name: 'status', label: 'Status', type: 'select', value: j.status, options: JOB_STATUSES.map(s => ({ value: s, label: s.replace('_', ' ') })) }) : ''}
+  ${field({ name: 'notes', label: 'Notes', type: 'textarea', value: j.notes })}
+  <input type="hidden" name="enquiry_id" value="${j.enquiry_id || ''}">
+  <button type="submit" class="btn btn-accent btn-block" style="margin-top:12px">${job ? 'Update Job' : 'Create Job'}</button>`;
+}
+
+function viewJobHtml(id) {
+  const { jobs, profile, profiles, cashEntries, inventoryLogs, serviceRequests } = store.getState();
+  const j = jobs.find(x => x.id === id);
+  if (!j) return '<p>Not found.</p>';
+  const role = profile.role;
+  const emp = profiles.find(p => p.id === j.assigned_to);
+  const relatedCash = cashEntries.filter(c => c.job_id === id);
+  const relatedInv = inventoryLogs.filter(i => i.job_id === id);
+
+  let actionBtns = '';
+  if (role === 'admin') {
+    if (j.status === 'new') actionBtns += `<button class="btn btn-info btn-sm" data-action="assign-job" data-id="${j.id}"><i class="fa-solid fa-user-plus"></i> Assign</button> `;
+    if (j.status === 'approved') actionBtns += `<button class="btn btn-success btn-sm" data-action="approve-job" data-id="${j.id}"><i class="fa-solid fa-stamp"></i> Approve &amp; Close</button> `;
+  }
+  if (role === 'manager') {
+    if (j.status === 'new') actionBtns += `<button class="btn btn-info btn-sm" data-action="assign-job" data-id="${j.id}"><i class="fa-solid fa-user-plus"></i> Assign</button> `;
+    if (j.status === 'verifying') actionBtns += `<button class="btn btn-success btn-sm" data-action="verify-job" data-id="${j.id}"><i class="fa-solid fa-check-double"></i> Verify</button> `;
+  }
+  if (role === 'employee') {
+    if (j.status === 'assigned') actionBtns += `<button class="btn btn-info btn-sm" data-action="start-job" data-id="${j.id}"><i class="fa-solid fa-play"></i> Start Work</button> `;
+    if (j.status === 'in_progress') actionBtns += `<button class="btn btn-warning btn-sm" data-action="collect-job" data-id="${j.id}"><i class="fa-solid fa-money-bill"></i> Collect Payment</button> `;
+    actionBtns += ` <button class="btn btn-ghost btn-sm" data-action="log-inventory" data-id="${j.id}"><i class="fa-solid fa-boxes-stacked"></i> Log Inventory</button>`;
+  }
+
+  return `${jobStepper(j.status)}
+  <div class="detail-grid">
+    <div class="detail-item"><label>Customer</label><span>${esc(j.customer_name)}</span></div>
+    <div class="detail-item"><label>Phone</label><span>${esc(j.customer_phone)}</span></div>
+    <div class="detail-item"><label>Email</label><span>${esc(j.customer_email || '')}</span></div>
+    <div class="detail-item"><label>Assigned To</label><span>${emp ? esc(emp.full_name) : 'Unassigned'}</span></div>
+    <div class="detail-item"><label>Scheduled</label><span>${fmtDate(j.scheduled_date)}</span></div>
+    <div class="detail-item"><label>Completed</label><span>${fmtDate(j.completed_date)}</span></div>
+    <div class="detail-item detail-full"><label>Address</label><span>${esc(j.address)}</span></div>
+    <div class="detail-item detail-full"><label>Description</label><span>${esc(j.description)}</span></div>
+    ${j.notes ? `<div class="detail-item detail-full"><label>Notes</label><span>${esc(j.notes)}</span></div>` : ''}
+  </div>
+  ${actionBtns ? `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:24px">${actionBtns}</div>` : ''}
+  <h3 style="font-size:15px;font-weight:600;margin-bottom:12px">Cash Entries</h3>
+  ${dataTable({
+    cols: [
+      { key: 'amount', label: 'Amount', render: r => `<span class="mono">${fmtCurrency(r.amount)}</span>` },
+      { key: 'type', label: 'Type', render: r => badge(r.type) },
+      { key: 'category', label: 'Category' },
+      { key: 'status', label: 'Status', render: r => badge(r.status) }
+    ],
+    rows: relatedCash,
+    empty: 'No cash entries'
+  })}
+  <h3 style="font-size:15px;font-weight:600;margin:20px 0 12px">Inventory Used</h3>
+  ${dataTable({
+    cols: [
+      { key: 'item_name', label: 'Item' },
+      { key: 'quantity', label: 'Qty', render: r => `<span class="mono">${r.quantity}</span>` },
+      { key: 'type', label: 'Type', render: r => badge(r.type) },
+      { key: 'created_at', label: 'Date', render: r => fmtDate(r.created_at) }
+    ],
+    rows: relatedInv,
+    empty: 'No inventory logged'
+  })}`;
+                                                                                                                         }
+
 
 /* Service Requests */
     if (action === 'create-sr') {
