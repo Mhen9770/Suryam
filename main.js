@@ -708,6 +708,81 @@ function viewJobHtml(id) {
     empty: 'No inventory logged'
   })}`;
                                                                                                                          }
+/* ============================================================
+   MODULE: CASH FLOW
+   ============================================================ */
+function renderCashFlow() {
+  const { profile, cashEntries, jobs } = store.getState();
+  const role = profile.role;
+  const canCreate = ['admin', 'manager', 'employee'].includes(role);
+  const canVerify = role === 'manager';
+  const canApprove = role === 'admin';
+  const totalIncome = cashEntries.filter(c => c.type === 'income' && c.status === 'approved').reduce((s, c) => s + Number(c.amount), 0);
+  const totalExpense = cashEntries.filter(c => c.type === 'expense').reduce((s, c) => s + Number(c.amount), 0);
+  const pendingAmount = cashEntries.filter(c => c.status === 'pending').reduce((s, c) => s + Number(c.amount), 0);
+  const verifiedAmount = cashEntries.filter(c => c.status === 'verified').reduce((s, c) => s + Number(c.amount), 0);
+
+  let html = `<div class="stats-grid">
+    ${statCard({ label: 'Approved Income', value: fmtCurrency(totalIncome), icon: 'fa-arrow-trend-up', color: 'green' })}
+    ${statCard({ label: 'Total Expenses', value: fmtCurrency(totalExpense), icon: 'fa-arrow-trend-down', color: 'red' })}
+    ${statCard({ label: 'Pending Collection', value: fmtCurrency(pendingAmount), icon: 'fa-hourglass-half', color: 'orange' })}
+    ${statCard({ label: 'Awaiting Approval', value: fmtCurrency(verifiedAmount), icon: 'fa-stamp', color: 'blue' })}
+  </div>`;
+
+  html += `<div class="toolbar">
+    <div class="search-box"><i class="fa-solid fa-search"></i><input type="text" placeholder="Search cash entries..." data-filter="cash-search"></div>
+    <select class="filter-select" data-filter="cash-type"><option value="">All Types</option><option value="income">Income</option><option value="expense">Expense</option></select>
+    <select class="filter-select" data-filter="cash-status"><option value="">All Statuses</option>${CASH_STATUSES.map(s => `<option value="${s}">${s}</option>`).join('')}</select>
+    <div class="toolbar-spacer"></div>
+    ${canCreate ? '<button class="btn btn-accent btn-sm" data-action="create-cash"><i class="fa-solid fa-plus"></i> New Entry</button>' : ''}
+  </div>`;
+
+  const filtered = cashEntries.filter(c => {
+    const search = document.querySelector('[data-filter="cash-search"]')?.value?.toLowerCase() || '';
+    const type = document.querySelector('[data-filter="cash-type"]')?.value || '';
+    const status = document.querySelector('[data-filter="cash-status"]')?.value || '';
+    if (search && !`${c.description} ${c.category}`.toLowerCase().includes(search)) return false;
+    if (type && c.type !== type) return false;
+    if (status && c.status !== status) return false;
+    return true;
+  });
+
+  const empName = (id) => { const p = store.getState().profiles.find(x => x.id === id); return p ? p.full_name : '—'; };
+
+  html += dataTable({
+    cols: [
+      { key: 'amount', label: 'Amount', render: r => `<span class="mono" style="font-weight:600">${fmtCurrency(r.amount)}</span>` },
+      { key: 'type', label: 'Type', render: r => badge(r.type) },
+      { key: 'category', label: 'Category' },
+      { key: 'description', label: 'Description', render: r => esc((r.description || '').slice(0, 40)) },
+      { key: 'collected_by', label: 'Collected By', render: r => esc(empName(r.collected_by)) },
+      { key: 'status', label: 'Status', render: r => badge(r.status) },
+      { key: 'created_at', label: 'Date', render: r => fmtDate(r.created_at) }
+    ],
+    rows: filtered,
+    actions: r => {
+      let btns = '';
+      if (canVerify && r.status === 'pending') btns += `<button class="btn btn-xs btn-success" data-action="verify-cash" data-id="${r.id}">Verify</button> `;
+      if (canApprove && r.status === 'verified') btns += `<button class="btn btn-xs btn-success" data-action="approve-cash" data-id="${r.id}">Approve</button> `;
+      if (canApprove && r.status !== 'rejected') btns += `<button class="btn btn-xs btn-danger" data-action="reject-cash" data-id="${r.id}">Reject</button> `;
+      return btns;
+    },
+    empty: 'No cash entries found'
+  });
+  return html;
+}
+
+function cashFormHtml() {
+  const { jobs, profile } = store.getState();
+  const jobOpts = jobs.filter(j => !['closed', 'approved'].includes(j.status)).map(j => ({ value: j.id, label: `${j.customer_name} — ${(j.description || '').slice(0, 30)}` }));
+  return `${field({ name: 'job_id', label: 'Linked Job', type: 'select', options: jobOpts })}
+  ${field({ name: 'amount', label: 'Amount', type: 'number', required: true, placeholder: '0.00' })}
+  ${field({ name: 'type', label: 'Type', type: 'select', value: 'income', options: [{ value: 'income', label: 'Income' }, { value: 'expense', label: 'Expense' }], required: true })}
+  ${field({ name: 'category', label: 'Category', type: 'select', options: CASH_CATEGORIES, required: true })}
+  ${field({ name: 'description', label: 'Description', type: 'textarea', required: true, placeholder: 'Payment details...' })}
+  <input type="hidden" name="collected_by" value="${profile.id}">
+  <button type="submit" class="btn btn-accent btn-block" style="margin-top:12px">Create Cash Entry</button>`;
+}
 
 
 /* Service Requests */
